@@ -35,6 +35,36 @@ Optional fields:
 
 The caller does not provide `-i`, local paths, output paths, upload method, output format, timeout, `-progress`, or `-threads`.
 
+## Allowed Arguments
+
+`input_args` is limited to:
+
+- `-ss <timestamp>`
+
+`timestamp` may be seconds, such as `120` or `120.5`, or `HH:MM:SS`, such as `00:02:00`.
+
+`ffmpeg_args` supports these option names:
+
+- boolean flags: `-vn`, `-an`, `-sn`, `-dn`
+- codecs: `-c:a`, `-codec:a`, `-acodec`, `-c:v`, `-codec:v`, `-vcodec`
+- bitrates/rate control: `-b:a`, `-b:v`, `-maxrate`, `-bufsize`
+- numeric options: `-crf`, `-r`, `-ar`, `-ac`
+- video filters: `-vf`, `-filter:v`
+- clipping/output timing: `-t`, `-to`
+- stream selection: `-map`
+- MP4 playback: `-movflags +faststart`
+- video preset: `-preset`
+
+Allowed codecs are `libmp3lame`, `aac`, `pcm_s16le`, `flac`, `libopus`, `libx264`, and `libx265`. Codec `copy` is not allowed.
+
+Allowed presets are `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium`, `slow`, `slower`, and `veryslow`.
+
+Allowed top-level video filters are `scale`, `fps`, `crop`, `pad`, `transpose`, `setsar`, and `format`. Filter strings are intentionally conservative; filters that read files, network URLs, subtitles, or external media are rejected.
+
+`-map` only supports selectors from the single input, such as `0`, `0:a`, `0:v`, `0:s`, `0:a:0`, and `0:v:0`.
+
+Worker-owned or unsupported options are rejected, including `-i`, `-y`, `-n`, `-loglevel`, `-hide_banner`, `-nostdin`, `-progress`, `-threads`, and `-f`.
+
 ## Examples
 
 MP3 extraction:
