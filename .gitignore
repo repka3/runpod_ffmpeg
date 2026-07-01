@@ -1,5 +1,6 @@
 .pytest_cache/
 .venv/
+.env
 __pycache__/
 *.py[cod]
 .coverage
@@ -7,4 +8,4 @@ coverage.xml
 dist/
 build/
 *.egg-info/
-
+example_put_presign.txt

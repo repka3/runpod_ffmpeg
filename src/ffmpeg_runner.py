@@ -49,6 +49,17 @@ def run_ffmpeg(
         config.clip_t_seconds,
         config.clip_to_seconds,
     )
+    LOGGER.info(
+        "ffmpeg_command command=%r expected_output_seconds=%.3f probed_duration_seconds=%.3f "
+        "input_seek_seconds=%r clip_t_seconds=%r clip_to_seconds=%r ffmpeg_timeout_s=%d",
+        command,
+        expected_seconds,
+        probed_duration,
+        config.input_seek_seconds,
+        config.clip_t_seconds,
+        config.clip_to_seconds,
+        FFMPEG_TIMEOUT_SECONDS,
+    )
     tracker = FFmpegProgress(
         expected_seconds=expected_seconds,
         callback=progress_callback,
@@ -81,6 +92,7 @@ def run_ffmpeg(
                 process.kill()
                 _, stderr = process.communicate()
                 stderr_tail = _tail(stderr_tail + (stderr or ""))
+                LOGGER.error("ffmpeg_timeout ffmpeg_timeout_s=%d stderr_tail=%r", FFMPEG_TIMEOUT_SECONDS, stderr_tail)
                 raise FFmpegFailed(f"timeout after {FFMPEG_TIMEOUT_SECONDS}s: {stderr_tail}")
             for key, _ in selector.select(timeout=0.5):
                 line = key.fileobj.readline()
@@ -105,14 +117,18 @@ def run_ffmpeg(
         selector.close()
 
     if returncode != 0:
+        LOGGER.error("ffmpeg_failed returncode=%d stderr_tail=%r", returncode, stderr_tail)
         raise FFmpegFailed(f"exit code {returncode}: {stderr_tail}")
 
     if not output_path.exists():
+        LOGGER.error("ffmpeg_missing_output output_path=%s", output_path)
         raise FFmpegFailed("ffmpeg completed but output file is missing")
     try:
-        output_path.stat()
+        output_stat = output_path.stat()
     except OSError as exc:
         raise FFmpegFailed(f"output file stat failed: {exc}") from exc
+
+    LOGGER.info("ffmpeg_complete returncode=%d output_file=%s output_bytes=%d", returncode, output_path.name, output_stat.st_size)
 
     tracker.update(expected_seconds, force=True)
 

@@ -1,4 +1,6 @@
-from src.errors import DownloadFailed, FFmpegFailed, FFprobeFailed, UploadFailed
+import logging
+
+from src.errors import DownloadFailed
 from src.worker import process_job
 
 
@@ -12,7 +14,8 @@ def valid_job():
     }
 
 
-def test_successful_orchestration(monkeypatch):
+def test_successful_orchestration(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     phases = []
 
     def fake_download(_url, path):
@@ -52,6 +55,28 @@ def test_successful_orchestration(monkeypatch):
         "uploading",
         "done",
     ]
+    log_text = caplog.text
+    assert "job_validated" in log_text
+    assert "ffmpeg_args=['-vn', '-c:a', 'libmp3lame', '-b:a', '128k']" in log_text
+    assert "stage_complete" in log_text
+    assert "downloaded_bytes=5" in log_text
+    assert "uploaded_bytes=6" in log_text
+
+
+def test_logs_header_names_without_header_values(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    job = valid_job()
+    job["input"]["upload_headers"] = {"Content-Type": "secret-audio-type"}
+
+    monkeypatch.setattr("src.worker.download_file", lambda _url, path: path.write_bytes(b"input") or 5)
+    monkeypatch.setattr("src.worker.probe_duration", lambda _path: 120)
+    monkeypatch.setattr("src.worker.run_ffmpeg", lambda _config, _input_path, output_path, **_kwargs: output_path.write_bytes(b"output"))
+    monkeypatch.setattr("src.worker.upload_file", lambda *_args, **_kwargs: 6)
+
+    process_job(job)
+
+    assert "upload_header_names=['Content-Type']" in caplog.text
+    assert "secret-audio-type" not in caplog.text
 
 
 def test_stage_failures_raise_with_existing_prefix(monkeypatch):

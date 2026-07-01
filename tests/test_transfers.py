@@ -69,13 +69,21 @@ def test_download_rejects_too_many_redirects(monkeypatch, tmp_path):
 
 @responses.activate
 def test_download_status_failure_redacts_query(tmp_path):
-    responses.add(responses.GET, "https://example.com/input.mp4", status=403)
+    responses.add(
+        responses.GET,
+        "https://example.com/input.mp4",
+        status=403,
+        body="<Error><Code>AccessDenied</Code></Error>",
+        headers={"x-amz-request-id": "REQ123"},
+    )
 
     with pytest.raises(DownloadFailed) as exc_info:
         download_file("https://example.com/input.mp4?token=secret", tmp_path / "input.mp4")
 
     assert "token=secret" not in str(exc_info.value)
     assert "https://example.com/input.mp4" in str(exc_info.value)
+    assert "AccessDenied" in str(exc_info.value)
+    assert "REQ123" in str(exc_info.value)
 
 
 @responses.activate
@@ -158,3 +166,58 @@ def test_upload_rejects_redirect_without_following(tmp_path):
 
     with pytest.raises(UploadFailed, match="HTTP 307"):
         upload_file("https://example.com/output.mp3", path, {})
+
+
+@responses.activate
+def test_upload_status_failure_includes_safe_response_detail_and_redacts_query(tmp_path):
+    path = tmp_path / "output.mp3"
+    path.write_bytes(b"abc")
+    responses.add(
+        responses.PUT,
+        "https://example.com/output.mp3",
+        status=403,
+        body="<Error><Code>SignatureDoesNotMatch</Code></Error>",
+        headers={"x-amz-request-id": "REQ456"},
+    )
+
+    with pytest.raises(UploadFailed) as exc_info:
+        upload_file("https://example.com/output.mp3?token=secret", path, {"Content-Type": "audio/mpeg"})
+
+    assert "token=secret" not in str(exc_info.value)
+    assert "SignatureDoesNotMatch" in str(exc_info.value)
+    assert "REQ456" in str(exc_info.value)
+
+
+@responses.activate
+def test_upload_status_failure_does_not_log_s3_signature_debug_fields(tmp_path):
+    path = tmp_path / "output.mp3"
+    path.write_bytes(b"abc")
+    responses.add(
+        responses.PUT,
+        "https://example.com/output.mp3",
+        status=403,
+        body=(
+            "<Error>"
+            "<Code>SignatureDoesNotMatch</Code>"
+            "<Message>The request signature we calculated does not match.</Message>"
+            "<AWSAccessKeyId>AKIASECRET</AWSAccessKeyId>"
+            "<StringToSign>AWS4-HMAC-SHA256 secret-string-to-sign</StringToSign>"
+            "<SignatureProvided>SECRET_SIGNATURE</SignatureProvided>"
+            "<CanonicalRequest>PUT\n/output.mp3\nX-Amz-Signature=SECRET_QUERY_SIGNATURE</CanonicalRequest>"
+            "</Error>"
+        ),
+        headers={"x-amz-request-id": "REQ789"},
+    )
+
+    with pytest.raises(UploadFailed) as exc_info:
+        upload_file("https://example.com/output.mp3?X-Amz-Signature=SECRET_URL_SIGNATURE", path, {})
+
+    message = str(exc_info.value)
+    assert "SignatureDoesNotMatch" in message
+    assert "The request signature we calculated does not match." in message
+    assert "REQ789" in message
+    assert "SECRET_URL_SIGNATURE" not in message
+    assert "AKIASECRET" not in message
+    assert "secret-string-to-sign" not in message
+    assert "SECRET_SIGNATURE" not in message
+    assert "SECRET_QUERY_SIGNATURE" not in message

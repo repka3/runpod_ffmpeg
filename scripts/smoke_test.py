@@ -17,7 +17,7 @@ def main() -> int:
     args = parse_args()
     api_key = os.environ.get("RUNPOD_API_KEY")
     if not api_key:
-        print("RUNPOD_API_KEY is required", file=sys.stderr)
+        print("RUNPOD_API_KEY is required", file=sys.stderr, flush=True)
         return 2
 
     try:
@@ -25,7 +25,7 @@ def main() -> int:
         ffmpeg_args = json.loads(args.ffmpeg_args)
         upload_headers = json.loads(args.upload_headers_json) if args.upload_headers_json else {}
     except json.JSONDecodeError as exc:
-        print(f"invalid JSON argument: {exc}", file=sys.stderr)
+        print(f"invalid JSON argument: {exc}", file=sys.stderr, flush=True)
         return 2
 
     payload = {
@@ -47,15 +47,15 @@ def main() -> int:
         run_response.raise_for_status()
         run_data = run_response.json()
     except (requests.RequestException, ValueError) as exc:
-        print(f"submit failed: {exc}", file=sys.stderr)
+        print(f"submit failed: {exc}", file=sys.stderr, flush=True)
         return 1
 
     job_id = run_data.get("id")
     if not isinstance(job_id, str) or not job_id:
-        print(f"malformed submit response: {run_data}", file=sys.stderr)
+        print(f"malformed submit response: {run_data}", file=sys.stderr, flush=True)
         return 1
 
-    print(f"submitted job {job_id}")
+    print(f"submitted job {job_id}", flush=True)
     deadline = time.monotonic() + args.max_wait_seconds
     status_url = f"{API_BASE}/{args.endpoint_id}/status/{job_id}"
     while time.monotonic() < deadline:
@@ -64,21 +64,21 @@ def main() -> int:
             status_response.raise_for_status()
             status_data = status_response.json()
         except (requests.RequestException, ValueError) as exc:
-            print(f"status failed: {exc}", file=sys.stderr)
+            print(f"status failed: {exc}", file=sys.stderr, flush=True)
             return 1
 
         status = status_data.get("status")
         progress = status_data.get("output", status_data.get("progress"))
-        print(f"status={status} progress={json.dumps(progress, sort_keys=True)}")
+        print(f"status={status} progress={json.dumps(progress, sort_keys=True)}", flush=True)
         if status == "COMPLETED":
-            print(json.dumps(status_data.get("output"), indent=2, sort_keys=True))
+            print(json.dumps(status_data.get("output"), indent=2, sort_keys=True), flush=True)
             return 0
         if status in {"FAILED", "CANCELLED", "TIMED_OUT"}:
-            print(json.dumps(status_data, indent=2, sort_keys=True), file=sys.stderr)
+            print(json.dumps(status_data, indent=2, sort_keys=True), file=sys.stderr, flush=True)
             return 1
         time.sleep(args.poll_interval_seconds)
 
-    print(f"timed out waiting for job {job_id}", file=sys.stderr)
+    print(f"timed out waiting for job {job_id}", file=sys.stderr, flush=True)
     return 1
 
 
