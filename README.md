@@ -143,11 +143,13 @@ Recommended request policy:
 }
 ```
 
-Use presigned URLs that stay valid for queue delay plus execution time. Provision at least 12 GB writable temp disk per concurrent job. RunPod async results are retained for a limited time after completion, so persist the final outcome promptly.
+Use presigned URLs that stay valid for queue delay plus execution time. For production jobs, include enough validity for one RunPod retry, because queue workers may retry a job if RunPod does not persist the final result cleanly. Provision at least 12 GB writable temp disk per concurrent job. RunPod async results are retained for a limited time after completion, so persist the final outcome promptly.
 
 ## S3 Presigned PUT
 
 Generate S3 PUT URLs against the bucket's regional endpoint. A URL signed for the global `s3.amazonaws.com` host can fail with `307 TemporaryRedirect`; the worker intentionally does not follow upload redirects.
+
+The `Content-Type` header passed to the worker must match the `ContentType` value used when generating the presigned PUT URL. A malformed, stale, copied incorrectly, or wrong-session S3 presign can fail with `HTTP 400 InvalidToken` even when the bucket path and filename are correct.
 
 ```bash
 AWS_REGION=eu-central-1 \
@@ -224,7 +226,7 @@ python -u -m src.handler
 After deployment:
 
 ```bash
-RUNPOD_API_KEY=... python scripts/smoke_test.py \
+RUNPOD_API_KEY=... python3 scripts/smoke_test.py \
   --endpoint-id "$RUNPOD_ENDPOINT_ID" \
   --source-url "https://..." \
   --upload-url "https://..." \
@@ -234,3 +236,19 @@ RUNPOD_API_KEY=... python scripts/smoke_test.py \
 ```
 
 The script submits with `/run`, polls every 5 seconds by default, and exits non-zero on failure or timeout.
+
+For cheap validation, first smoke test with a small media file and fresh presigned GET/PUT URLs. Do not reuse old presigned URLs from logs, chat, or previous failed runs; generate a new PUT URL for the exact output key and content type you are testing.
+
+Expected success shape:
+
+```json
+{
+  "phase": "done",
+  "duration_seconds": 4.969
+}
+```
+
+Validated deployed examples:
+
+- small MP3 to MP3 completed with `phase: "done"`.
+- large MP4 to MP3 completed with `phase: "done"` and uploaded a playable MP3.
