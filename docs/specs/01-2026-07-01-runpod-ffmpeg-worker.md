@@ -27,6 +27,8 @@ The worker is intended for CPU instances. Main workflows are audio extraction/co
 - The worker ffmpeg timeout is fixed at 1 hour.
 - Caller should use RunPod `/run`, then poll `/status/{job_id}`. `/runsync` is only for local/short tests.
 - RunPod async results are retained for a limited time after completion, so the caller should persist the final outcome promptly.
+- Presigned source and upload URLs must remain valid for the full queue delay plus execution window. In practice, sign them for longer than the configured RunPod `ttl`.
+- The endpoint should be provisioned with enough temporary disk for at least the maximum input plus maximum output plus container/runtime overhead. V1 requires at least 12 GB of writable temp space per concurrent job.
 
 ## Request Contract
 
@@ -69,17 +71,21 @@ Not supported in v1:
 - Direct S3 credentials.
 - Webhooks implemented inside the worker.
 
+All request validation failures raise `INVALID_INPUT`.
+
 ## URL Rules
 
 - URLs must use `https://`.
 - Filename extension is derived from the URL path only.
 - Query string and fragment are ignored for filename/extension derivation.
 - If either URL path does not end in a filename with an extension, the job fails with `INVALID_INPUT`.
+- If either derived extension is not in the corresponding allowed extension list, the job fails with `INVALID_INPUT`.
 - Local input filename is `input.<source_ext>`.
 - Local output filename is `output.<upload_ext>`.
 - Logs may include scheme, host, and path, but must redact query string and fragment.
-- Downloads may follow redirects only if the final URL remains HTTPS.
-- Uploads must not follow redirects.
+- Downloads may follow redirects only if every redirect hop and the final URL remain HTTPS.
+- Downloads should cap redirects at a small fixed number, such as 5.
+- Uploads must not follow redirects. Any upload `3xx` response is `UPLOAD_FAILED`.
 
 Allowed input extensions:
 
@@ -99,15 +105,28 @@ mp4, mov, m4v, webm, mp3, wav, m4a, aac, flac, ogg, opus
 - Upload output with streaming HTTP PUT.
 - Maximum downloaded input size: 5 GB.
 - Maximum uploaded output size: 5 GB.
-- If input download exceeds 5 GB, fail with `LIMIT_EXCEEDED`.
+- Enforce the input limit by counting streamed bytes while downloading. Do not trust `Content-Length` alone.
+- If `Content-Length` is present and already exceeds 5 GB, fail before downloading with `LIMIT_EXCEEDED`.
+- If input download exceeds 5 GB while streaming, abort the transfer and fail with `LIMIT_EXCEEDED`.
 - If generated output exceeds 5 GB, fail before upload with `LIMIT_EXCEEDED`.
+- The worker should use bounded transfer timeouts:
+  - connect timeout: 10 seconds.
+  - read/write stall timeout: 60 seconds.
+- A transfer timeout fails with `DOWNLOAD_FAILED` or `UPLOAD_FAILED`, depending on the stage.
+- Download success statuses are `200 OK` and `206 Partial Content`.
+- Upload success statuses are `200 OK`, `201 Created`, and `204 No Content`.
+- Any other transfer status is a stage-specific failure.
 - `upload_headers` are passed only to the upload request.
 - The worker does not add `Content-Type` or other headers automatically.
-- Reject upload headers named:
+- The worker may set HTTP mechanics headers required for a correct upload, such as `Content-Length`, from the known output file size.
+- Caller-provided upload header names are matched case-insensitively.
+- Reject caller-provided upload headers named:
   - `Host`
   - `Content-Length`
   - `Transfer-Encoding`
   - `Connection`
+- Reject upload header names or values containing newline/control characters.
+- Never log upload header values.
 
 ## FFmpeg Command Shape
 
@@ -145,6 +164,7 @@ The caller must not pass:
 - raw shell syntax
 
 No shell is used to execute ffmpeg.
+The worker does not set `-threads` in v1; ffmpeg and the selected encoder use their defaults.
 
 ## FFprobe
 
@@ -153,6 +173,7 @@ No shell is used to execute ffmpeg.
 - If `ffprobe` fails or duration is missing/zero/non-numeric, fail with `FFPROBE_FAILED`.
 - Log duration in human-readable `HH:MM:SS` format.
 - Duration is used to estimate ffmpeg progress.
+- This is a deliberate v1 tradeoff: files without a usable media duration may still be transcodable by ffmpeg, but v1 rejects them so progress and clipping behavior stay predictable.
 
 ## Allowed FFmpeg Arguments
 
@@ -182,6 +203,13 @@ Allowed audio options:
 -b:a
 -ar
 -ac
+```
+
+Allowed clipping options:
+
+```txt
+-t
+-to
 ```
 
 Allowed video/compression options:
@@ -267,11 +295,7 @@ Filter string validation for `-vf` and `-filter:v`:
 - Reject semicolon.
 - Reject backticks.
 - Reject newline/control characters.
-- Reject URL/protocol-looking values containing:
-  - `http://`
-  - `https://`
-  - `file:`
-  - `pipe:`
+- Additional filter-specific safety rules are listed below.
 
 `-map` validation:
 
@@ -283,6 +307,65 @@ Filter string validation for `-vf` and `-filter:v`:
   - `0:a:0`
   - `0:s`
   - `0:s:0`
+
+Argument parsing rules:
+
+- Options are parsed left to right.
+- Any unrecognized flag fails with `INVALID_INPUT`.
+- Any stray positional token fails with `INVALID_INPUT`.
+- Any option missing its required value fails with `INVALID_INPUT`.
+- Boolean flags consume no value:
+  - `-vn`
+  - `-an`
+  - `-sn`
+  - `-dn`
+- Value options consume exactly one following token:
+  - `-ss`
+  - `-t`
+  - `-to`
+  - codec options
+  - bitrate options
+  - numeric options
+  - filter options
+  - `-map`
+  - `-movflags`
+- Stream-index-qualified option names such as `-c:a:0` and `-b:a:1` are not supported in v1.
+- `-t` and `-to` use the same timestamp validation as `-ss`.
+- A request must not include both `-t` and `-to`; choose one clipping duration/end model.
+- For clipping, use `input_args: ["-ss", "..."]` plus `ffmpeg_args: ["-t", "...", ...]` or `ffmpeg_args: ["-to", "...", ...]`.
+
+Filter safety rules:
+
+- V1 allows only simple video filter strings intended for scaling and basic video transforms. This is not a full ffmpeg filter parser.
+- Allowed top-level video filter names:
+  - `scale`
+  - `fps`
+  - `crop`
+  - `pad`
+  - `transpose`
+  - `setsar`
+  - `format`
+- Reject any top-level filter name outside that allowlist.
+- Reject filters known to read files, network resources, or external plugins, including:
+  - `movie`
+  - `amovie`
+  - `subtitles`
+  - `ass`
+  - `drawtext` when it contains `textfile=`
+  - `frei0r`
+- Reject protocol-looking values containing:
+  - `http:`
+  - `https:`
+  - `file:`
+  - `pipe:`
+  - `ftp:`
+  - `tcp:`
+  - `udp:`
+  - `rtmp:`
+  - `data:`
+  - `concat:`
+  - `subfile:`
+  - `crypto:`
 
 ## Progress Contract
 
@@ -318,12 +401,23 @@ Phases:
 
 Progress behavior:
 
+- `duration_seconds` in progress payloads always means elapsed wall-clock time since the worker started the job. It does not mean media duration.
 - Parse ffmpeg progress continuously using ffmpeg progress output.
-- Estimate percent as `out_time_ms / input_duration_ms * 100`.
+- Parse `out_time_us` when ffmpeg emits it. Fallback to parsing `out_time` as `HH:MM:SS.microseconds`. Do not assume `out_time_ms` means milliseconds without an explicit implementation test for the installed ffmpeg version.
+- Convert ffmpeg progress time to seconds before calculating percent.
+- Estimate percent as `processed_media_seconds / expected_output_media_seconds * 100`.
+- `expected_output_media_seconds` is:
+  - probed media duration when no clipping duration/end is provided.
+  - requested `-t` duration when `-t` is provided.
+  - requested `-to` minus input `-ss` offset when both are provided.
+  - requested `-to` when `-to` is provided without input `-ss`.
+  - probed media duration minus input `-ss` offset when only input `-ss` is provided.
 - Clamp percent to `0-100`.
+- Percent should be monotonic for a single job; never send a lower percent than the last forwarded percent.
 - Forward progress to RunPod at most once every 2 seconds when percent changes.
 - The forwarded percent is the current estimate, rounded to one decimal.
 - RunPod logs should log ffmpeg progress only at 10% buckets to avoid noise.
+- Send a final `running_ffmpeg` progress update with `percent: 100.0` before moving to `uploading`, if ffmpeg completed successfully.
 - External systems may poll RunPod `/status` at whatever cadence they choose and receive the latest forwarded progress.
 
 ## Success Response
@@ -336,6 +430,8 @@ On success, return:
   "duration_seconds": 123.4
 }
 ```
+
+`duration_seconds` in the success response means total elapsed wall-clock time for the worker job.
 
 No presigned URLs are returned.
 No byte counts are required in the final response.
@@ -368,6 +464,12 @@ LIMIT_EXCEEDED: input exceeded 5 GB
 ```
 
 FFmpeg failures should include a capped stderr tail, max 4000 characters.
+FFmpeg timeout fails as `FFMPEG_FAILED`.
+Out-of-disk errors fail with the prefix for the active stage:
+
+- during download: `DOWNLOAD_FAILED`.
+- during ffmpeg/output write: `FFMPEG_FAILED`.
+- during upload: `UPLOAD_FAILED`.
 
 Logs may include more detailed operational context, but must not include presigned query strings or fragments.
 
@@ -387,9 +489,11 @@ Include focused unit tests for worker-owned behavior:
 - allowlist validation
 - unsafe filter rejection
 - command construction
-- size-limit failures
+- input and output size-limit failures
 - ffprobe duration handling
 - ffmpeg failure error formatting
+- ffmpeg progress unit parsing
+- clipping progress denominator with `-ss`, `-t`, and `-to`
 
 Automated tests do not need real bucket/network calls.
 
@@ -398,11 +502,14 @@ Include a deployed smoke-test script:
 ```bash
 python scripts/smoke_test.py \
   --endpoint-id "$RUNPOD_ENDPOINT_ID" \
-  --api-key "$RUNPOD_API_KEY" \
   --source-url "https://..." \
   --upload-url "https://..." \
+  --input-args '["-ss", "00:30:00"]' \
   --ffmpeg-args '["-vn", "-c:a", "libmp3lame", "-b:a", "128k"]'
 ```
+
+The smoke test reads the API key from `RUNPOD_API_KEY` rather than from an argv flag.
+It should also support optional `--upload-headers-json`.
 
 The smoke test should:
 
@@ -411,4 +518,9 @@ The smoke test should:
 3. Print progress/status.
 4. Exit `0` on successful completion.
 5. Exit non-zero on failure, timeout, or malformed response.
+6. Enforce a caller-provided max wait, defaulting to 75 minutes.
 
+## Repository Documentation
+
+README examples, local test fixtures, and smoke-test examples must match this v1 contract.
+Older placeholder-based examples using `{input}`, `{output}`, caller-provided `-i`, `output_name`, `upload_method`, or caller-provided timeout are obsolete and must not be kept as active documentation.
