@@ -116,7 +116,19 @@ Success returns:
 }
 ```
 
-Failures raise exceptions so RunPod marks the job failed. Stable prefixes are `INVALID_INPUT`, `DOWNLOAD_FAILED`, `FFPROBE_FAILED`, `FFMPEG_FAILED`, `UPLOAD_FAILED`, and `LIMIT_EXCEEDED`.
+Failures return a stable payload:
+
+```json
+{
+  "phase": "failed",
+  "failed_phase": "uploading",
+  "error_prefix": "UPLOAD_FAILED",
+  "message": "UPLOAD_FAILED: HTTP 403 while uploading https://bucket.example/path/output.mp3",
+  "duration_seconds": 123.4
+}
+```
+
+Stable prefixes are `INVALID_INPUT`, `DOWNLOAD_FAILED`, `FFPROBE_FAILED`, `FFMPEG_FAILED`, `UPLOAD_FAILED`, `LIMIT_EXCEEDED`, and `WORKER_FAILED`.
 
 ## RunPod Settings
 
@@ -132,6 +144,43 @@ Recommended request policy:
 ```
 
 Use presigned URLs that stay valid for queue delay plus execution time. Provision at least 12 GB writable temp disk per concurrent job. RunPod async results are retained for a limited time after completion, so persist the final outcome promptly.
+
+## S3 Presigned PUT
+
+Generate S3 PUT URLs against the bucket's regional endpoint. A URL signed for the global `s3.amazonaws.com` host can fail with `307 TemporaryRedirect`; the worker intentionally does not follow upload redirects.
+
+```bash
+AWS_REGION=eu-central-1 \
+S3_BUCKET=your-bucket-name \
+S3_KEY=path/output.mp3 \
+S3_CONTENT_TYPE=audio/mpeg \
+python3 - <<'PY'
+import os
+import boto3
+from botocore.config import Config
+
+region = os.environ["AWS_REGION"]
+bucket = os.environ["S3_BUCKET"]
+key = os.environ["S3_KEY"]
+content_type = os.environ["S3_CONTENT_TYPE"]
+
+s3 = boto3.client(
+    "s3",
+    region_name=region,
+    endpoint_url=f"https://s3.{region}.amazonaws.com",
+    config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+)
+
+print(
+    s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": bucket, "Key": key, "ContentType": content_type},
+        ExpiresIn=7200,
+        HttpMethod="PUT",
+    )
+)
+PY
+```
 
 ## Local Development
 

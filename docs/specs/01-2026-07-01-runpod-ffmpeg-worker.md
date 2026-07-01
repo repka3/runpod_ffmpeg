@@ -10,7 +10,7 @@ Create a private RunPod Serverless queue worker that:
 4. Runs `ffmpeg` locally with allowlisted caller-provided transform options.
 5. Uploads the generated output file with HTTP PUT.
 6. Reports progress through RunPod status updates.
-7. Returns a minimal success payload or raises a stage-specific error.
+7. Returns a minimal success payload or a stable failed payload.
 
 The worker is intended for CPU instances. Main workflows are audio extraction/conversion for transcription, video/audio to MP3 or WAV, meeting-video compression, and meeting clip creation.
 
@@ -71,7 +71,7 @@ Not supported in v1:
 - Direct S3 credentials.
 - Webhooks implemented inside the worker.
 
-All request validation failures raise `INVALID_INPUT`.
+All request validation failures are reported with `INVALID_INPUT`.
 
 ## URL Rules
 
@@ -402,6 +402,7 @@ Phases:
 Progress behavior:
 
 - `duration_seconds` in progress payloads always means elapsed wall-clock time since the worker started the job. It does not mean media duration.
+- Progress updates are best-effort telemetry. A failure to send a progress update must be logged, but must not change the final `done` or `failed` result of the job.
 - Parse ffmpeg progress continuously using ffmpeg progress output.
 - Parse `out_time_us` when ffmpeg emits it. Fallback to parsing `out_time` as `HH:MM:SS.microseconds`. Do not assume `out_time_ms` means milliseconds without an explicit implementation test for the installed ffmpeg version.
 - Convert ffmpeg progress time to seconds before calculating percent.
@@ -439,9 +440,28 @@ Operational detail belongs in RunPod logs.
 
 ## Error Contract
 
-Anything wrong raises an exception. RunPod marks the job failed.
+Stage code may use exceptions internally, but the worker boundary must catch all exceptions and return a stable failure payload. `process_job` is the primary boundary for normal worker execution, and `handler` has an additional outer catch as a backstop so unexpected leaks still become `phase: "failed"`. Expected worker failures must not escape to RunPod as top-level handler exceptions, because queue-based RunPod endpoints may retry failed jobs.
 
-Raised error messages must use stable prefixes:
+This contract covers every Python-level exception that reaches the handler path. Hard platform failures where Python cannot continue running, such as container kill, host loss, or import failure before the handler starts, must still be treated as failures by the caller from RunPod's own terminal status.
+
+On failure, return:
+
+```json
+{
+  "phase": "failed",
+  "failed_phase": "uploading",
+  "error_prefix": "UPLOAD_FAILED",
+  "message": "UPLOAD_FAILED: HTTP 403 while uploading https://bucket.example/path/output.mp3",
+  "duration_seconds": 123.4
+}
+```
+
+The response must not use a top-level key named `error`, because the RunPod SDK treats that as a failed job result rather than a normal output payload.
+
+For known worker errors, `message` may include safe operational detail with redacted URLs.
+For unexpected Python exceptions, return `error_prefix: "WORKER_FAILED"` and a generic message that points to RunPod logs rather than exposing raw exception text.
+
+Known worker errors must use stable prefixes. Unexpected Python exceptions that are caught at the worker boundary use `WORKER_FAILED`.
 
 ```txt
 INVALID_INPUT
@@ -450,6 +470,7 @@ FFPROBE_FAILED
 FFMPEG_FAILED
 UPLOAD_FAILED
 LIMIT_EXCEEDED
+WORKER_FAILED
 ```
 
 Examples:
@@ -463,7 +484,7 @@ UPLOAD_FAILED: HTTP 403 while uploading https://bucket.example/path/output.mp3
 LIMIT_EXCEEDED: input exceeded 5 GB
 ```
 
-FFmpeg failures should include a capped stderr tail, max 4000 characters.
+FFmpeg failures should include a capped stderr tail in the failure message and logs, max 4000 characters.
 FFmpeg timeout fails as `FFMPEG_FAILED`.
 Out-of-disk errors fail with the prefix for the active stage:
 

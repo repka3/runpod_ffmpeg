@@ -44,7 +44,9 @@ def download_file(url: str, destination: Path, session: requests.Session | None 
                 timeout=(CONNECT_TIMEOUT_SECONDS, STALL_TIMEOUT_SECONDS),
             )
         except requests.RequestException as exc:
-            raise DownloadFailed(f"{exc} while downloading {redacted_url(current_url)}") from exc
+            raise DownloadFailed(
+                f"{_safe_exception_summary(exc)} while downloading {redacted_url(current_url)}"
+            ) from None
 
         if 300 <= response.status_code < 400:
             location = response.headers.get("Location")
@@ -100,7 +102,9 @@ def download_file(url: str, destination: Path, session: requests.Session | None 
         except OSError as exc:
             raise DownloadFailed(f"local write failed while downloading {redacted_url(current_url)}: {exc}") from exc
         except requests.RequestException as exc:
-            raise DownloadFailed(f"{exc} while downloading {redacted_url(current_url)}") from exc
+            raise DownloadFailed(
+                f"{_safe_exception_summary(exc)} while downloading {redacted_url(current_url)}"
+            ) from None
         finally:
             response.close()
         LOGGER.info(
@@ -146,7 +150,7 @@ def upload_file(url: str, path: Path, headers: dict[str, str], session: requests
                 timeout=(CONNECT_TIMEOUT_SECONDS, STALL_TIMEOUT_SECONDS),
             )
     except requests.RequestException as exc:
-        raise UploadFailed(f"{exc} while uploading {redacted_url(url)}") from exc
+        raise UploadFailed(f"{_safe_exception_summary(exc)} while uploading {redacted_url(url)}") from None
     except OSError as exc:
         raise UploadFailed(f"local read failed while uploading {redacted_url(url)}: {exc}") from exc
 
@@ -208,3 +212,7 @@ def _clean_error_field(value: str) -> str:
     if len(cleaned) > ERROR_FIELD_LIMIT:
         return cleaned[:ERROR_FIELD_LIMIT] + "...<truncated>"
     return cleaned
+
+
+def _safe_exception_summary(exc: requests.RequestException) -> str:
+    return type(exc).__name__

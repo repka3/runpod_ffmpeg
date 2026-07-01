@@ -12,7 +12,7 @@ Build the v1 RunPod Serverless FFmpeg worker exactly to the approved spec:
 - allowlisted transform arguments only
 - RunPod async progress updates
 - minimal success response
-- stage-specific raised errors on failure
+- stage-specific internal exceptions converted to a stable failed payload
 - deployable through RunPod GitHub source build
 
 No implementation step may expand the public request contract beyond the spec without a new spec change.
@@ -230,13 +230,14 @@ Tasks:
 }
 ```
 
-- Raise stage-specific exceptions for failures.
+- Convert all exceptions at the handler boundary to a stable `phase: "failed"` payload.
+- Do not return a top-level `error` key, because the RunPod SDK treats that as a failed job result.
 - Ensure cleanup is best effort and cannot fail a confirmed successful upload.
 
 Verification:
 
 - Unit test successful orchestration with mocked transfer/probe/ffmpeg/upload.
-- Unit tests each stage failure maps to the expected error prefix.
+- Unit tests each stage failure maps to a `phase: "failed"` payload with the expected error prefix.
 
 ## Phase 8 - Documentation And Examples
 

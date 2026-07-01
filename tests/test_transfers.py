@@ -1,7 +1,9 @@
 from pathlib import Path
 
 import pytest
+import requests
 import responses
+import urllib3
 
 from src.errors import DownloadFailed, LimitExceeded, UploadFailed
 from src.transfers import MAX_BYTES, download_file, upload_file
@@ -108,6 +110,47 @@ def test_download_write_error_maps_to_download_failed():
         download_file("https://example.com/input.mp4", BadDestination())
 
 
+def test_download_request_exception_redacts_url_and_suppresses_raw_cause(tmp_path):
+    class BadSession:
+        def get(self, *_args, **_kwargs):
+            raise requests.ConnectionError(
+                "failed for https://example.com/input.mp4?X-Amz-Signature=SECRET&X-Amz-Credential=SECRET"
+            )
+
+    with pytest.raises(DownloadFailed) as exc_info:
+        download_file("https://example.com/input.mp4?X-Amz-Signature=SECRET", tmp_path / "input.mp4", session=BadSession())
+
+    message = str(exc_info.value)
+    assert "https://example.com/input.mp4" in message
+    assert "X-Amz-Signature" not in message
+    assert "X-Amz-Credential" not in message
+    assert "failed for" not in message
+    assert exc_info.value.__suppress_context__ is True
+
+
+def test_download_realistic_max_retry_error_does_not_leak_path_query(tmp_path):
+    class BadSession:
+        def get(self, *_args, **_kwargs):
+            pool = urllib3.connectionpool.HTTPSConnectionPool("example.com")
+            raise requests.ConnectionError(
+                urllib3.exceptions.MaxRetryError(
+                    pool,
+                    "/input.mp4?X-Amz-Signature=SECRET&X-Amz-Credential=SECRET",
+                    reason=urllib3.exceptions.NewConnectionError(None, "boom"),
+                )
+            )
+
+    with pytest.raises(DownloadFailed) as exc_info:
+        download_file("https://example.com/input.mp4?X-Amz-Signature=SECRET", tmp_path / "input.mp4", session=BadSession())
+
+    message = str(exc_info.value)
+    assert "ConnectionError while downloading https://example.com/input.mp4" in message
+    assert "X-Amz-Signature" not in message
+    assert "X-Amz-Credential" not in message
+    assert "SECRET" not in message
+    assert "Max retries exceeded" not in message
+
+
 @responses.activate
 def test_upload_puts_file_with_content_length_and_headers(tmp_path):
     path = tmp_path / "output.mp3"
@@ -156,6 +199,53 @@ def test_upload_read_error_maps_to_upload_failed(monkeypatch, tmp_path):
     monkeypatch.setattr(type(path), "open", lambda self, mode="r", *args, **kwargs: BadFile())
     with pytest.raises(UploadFailed, match="local read failed"):
         upload_file("https://example.com/output.mp3", path, {}, session=BadSession())
+
+
+def test_upload_request_exception_redacts_url_and_suppresses_raw_cause(tmp_path):
+    path = tmp_path / "output.mp3"
+    path.write_bytes(b"abc")
+
+    class BadSession:
+        def put(self, *_args, **_kwargs):
+            raise requests.ConnectionError(
+                "failed for https://example.com/output.mp3?X-Amz-Signature=SECRET&X-Amz-Credential=SECRET"
+            )
+
+    with pytest.raises(UploadFailed) as exc_info:
+        upload_file("https://example.com/output.mp3?X-Amz-Signature=SECRET", path, {}, session=BadSession())
+
+    message = str(exc_info.value)
+    assert "https://example.com/output.mp3" in message
+    assert "X-Amz-Signature" not in message
+    assert "X-Amz-Credential" not in message
+    assert "failed for" not in message
+    assert exc_info.value.__suppress_context__ is True
+
+
+def test_upload_realistic_max_retry_error_does_not_leak_path_query(tmp_path):
+    path = tmp_path / "output.mp3"
+    path.write_bytes(b"abc")
+
+    class BadSession:
+        def put(self, *_args, **_kwargs):
+            pool = urllib3.connectionpool.HTTPSConnectionPool("example.com")
+            raise requests.ConnectionError(
+                urllib3.exceptions.MaxRetryError(
+                    pool,
+                    "/output.mp3?X-Amz-Signature=SECRET&X-Amz-Credential=SECRET",
+                    reason=urllib3.exceptions.NewConnectionError(None, "boom"),
+                )
+            )
+
+    with pytest.raises(UploadFailed) as exc_info:
+        upload_file("https://example.com/output.mp3?X-Amz-Signature=SECRET", path, {}, session=BadSession())
+
+    message = str(exc_info.value)
+    assert "ConnectionError while uploading https://example.com/output.mp3" in message
+    assert "X-Amz-Signature" not in message
+    assert "X-Amz-Credential" not in message
+    assert "SECRET" not in message
+    assert "Max retries exceeded" not in message
 
 
 @responses.activate

@@ -71,7 +71,10 @@ def main() -> int:
         progress = status_data.get("output", status_data.get("progress"))
         print(f"status={status} progress={json.dumps(progress, sort_keys=True)}", flush=True)
         if status == "COMPLETED":
-            print(json.dumps(status_data.get("output"), indent=2, sort_keys=True), flush=True)
+            output = status_data.get("output")
+            print(json.dumps(output, indent=2, sort_keys=True), flush=True)
+            if isinstance(output, dict) and output.get("phase") == "failed":
+                return 1
             return 0
         if status in {"FAILED", "CANCELLED", "TIMED_OUT"}:
             print(json.dumps(status_data, indent=2, sort_keys=True), file=sys.stderr, flush=True)
