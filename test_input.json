@@ -1,9 +1,10 @@
 {
   "input": {
     "source_url": "https://example.com/input.mp4",
-    "upload_url": "https://example.com/output.mp4",
-    "ffmpeg_args": ["-i", "{input}", "-c:v", "libx264", "-c:a", "aac", "{output}"],
-    "output_name": "output.mp4"
+    "upload_url": "https://example.com/output.mp3",
+    "ffmpeg_args": ["-vn", "-c:a", "libmp3lame", "-b:a", "128k"],
+    "upload_headers": {
+      "Content-Type": "audio/mpeg"
+    }
   }
 }
-
