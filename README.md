@@ -142,9 +142,12 @@ Success returns:
 ```json
 {
   "phase": "done",
+  "media_duration_seconds": 3600.123,
   "duration_seconds": 123.4
 }
 ```
+
+`media_duration_seconds` is the probed duration of the generated output media file. `duration_seconds` is worker wall-clock runtime.
 
 Failures return a stable payload:
 
@@ -274,6 +277,7 @@ Expected success shape:
 ```json
 {
   "phase": "done",
+  "media_duration_seconds": 12.345,
   "duration_seconds": 4.969
 }
 ```

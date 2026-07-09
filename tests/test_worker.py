@@ -17,12 +17,16 @@ def valid_job():
 def test_successful_orchestration(monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     phases = []
+    probed_paths = []
 
     def fake_download(_url, path):
         path.write_bytes(b"input")
         return 5
 
-    def fake_probe(_path):
+    def fake_probe(path):
+        probed_paths.append(path.name)
+        if path.name == "output.mp3":
+            return 119.75
         return 120
 
     def fake_run(_config, _input_path, output_path, **kwargs):
@@ -47,6 +51,8 @@ def test_successful_orchestration(monkeypatch, caplog):
     result = process_job(valid_job(), phases.append)
 
     assert result["phase"] == "done"
+    assert result["media_duration_seconds"] == 119.75
+    assert probed_paths == ["input.mp4", "output.mp3"]
     assert [payload["phase"] for payload in phases] == [
         "downloading",
         "probing",

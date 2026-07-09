@@ -119,7 +119,14 @@ def process_job(job: dict, progress_update: ProgressCallback | None = None) -> d
             started_at=started_at,
         )
         output_size = output_path.stat().st_size
-        stage_complete("running_ffmpeg", output_file=output_path.name, output_bytes=output_size)
+        output_duration = probe_duration(output_path)
+        media_duration_seconds = round(output_duration, 3)
+        stage_complete(
+            "running_ffmpeg",
+            output_file=output_path.name,
+            output_bytes=output_size,
+            media_duration_seconds=media_duration_seconds,
+        )
 
         stage_start(
             "uploading",
@@ -132,7 +139,11 @@ def process_job(job: dict, progress_update: ProgressCallback | None = None) -> d
         stage_complete("uploading", uploaded_bytes=uploaded_bytes, output_file=output_path.name)
 
         duration_seconds = round(time.monotonic() - started_at, 3)
-        result = {"phase": "done", "duration_seconds": duration_seconds}
+        result = {
+            "phase": "done",
+            "media_duration_seconds": media_duration_seconds,
+            "duration_seconds": duration_seconds,
+        }
         emit("done")
         LOGGER.info("job_complete job_id=%s duration_seconds=%.3f output_file=%s", job_id, duration_seconds, output_path.name)
         return result

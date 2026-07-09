@@ -6,11 +6,12 @@ Create a private RunPod Serverless queue worker that:
 
 1. Receives one source media URL and one upload URL.
 2. Downloads the source file locally.
-3. Runs `ffprobe` to get duration.
+3. Runs `ffprobe` to get source duration.
 4. Runs `ffmpeg` locally with allowlisted caller-provided transform options.
-5. Uploads the generated output file with HTTP PUT.
-6. Reports progress through RunPod status updates.
-7. Returns a minimal success payload or a stable failed payload.
+5. Runs `ffprobe` on the generated output file to get output media duration.
+6. Uploads the generated output file with HTTP PUT.
+7. Reports progress through RunPod status updates.
+8. Returns a minimal success payload or a stable failed payload.
 
 The worker is intended for CPU instances. Main workflows are audio extraction/conversion for transcription, video/audio to MP3 or WAV, meeting-video compression, and meeting clip creation.
 
@@ -169,10 +170,13 @@ The worker does not set `-threads` in v1; ffmpeg and the selected encoder use th
 ## FFprobe
 
 - After download, run `ffprobe` on the local input file.
-- `ffprobe` must return a positive numeric duration.
-- If `ffprobe` fails or duration is missing/zero/non-numeric, fail with `FFPROBE_FAILED`.
-- Log duration in human-readable `HH:MM:SS` format.
-- Duration is used to estimate ffmpeg progress.
+- Source `ffprobe` must return a positive numeric duration.
+- Source duration is used to estimate ffmpeg progress.
+- After `ffmpeg` completes, run `ffprobe` on the generated output file.
+- Output `ffprobe` must return a positive numeric duration.
+- Return the output media duration as `media_duration_seconds` in the success payload.
+- If either `ffprobe` fails or duration is missing/zero/non-numeric, fail with `FFPROBE_FAILED`.
+- Log durations in human-readable `HH:MM:SS` format.
 - This is a deliberate v1 tradeoff: files without a usable media duration may still be transcodable by ffmpeg, but v1 rejects them so progress and clipping behavior stay predictable.
 
 ## Allowed FFmpeg Arguments
@@ -428,11 +432,13 @@ On success, return:
 ```json
 {
   "phase": "done",
+  "media_duration_seconds": 3600.123,
   "duration_seconds": 123.4
 }
 ```
 
 `duration_seconds` in the success response means total elapsed wall-clock time for the worker job.
+`media_duration_seconds` means the probed duration of the generated output media file.
 
 No presigned URLs are returned.
 No byte counts are required in the final response.
